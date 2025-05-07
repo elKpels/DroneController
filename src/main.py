@@ -4,13 +4,13 @@ import serial
 import time
 
 # Parámetros
-COM_PORT  = 'COM4'    # Ajusta al puerto de tu Arduino
+COM_PORT  = 'COM4'
 BAUD_RATE = 9600
-DEAD_ZONE = 0.3       # zona muerta del joystick
-STEP      = 5         # cuánto cambia el valor por iteración
-DELAY     = 0.02      # retardo del bucle en segundos
+DEAD_ZONE = 0.3
+STEP      = 5
+DELAY     = 0.02
 UPDATE_MS = int(DELAY * 1000)
-RECONNECT_INTERVAL = 2.0  # segundos entre intentos de reconexión joystick o arduino
+RECONNECT_INTERVAL = 2.0
 
 class FanControllerUI:
     def __init__(self, root):
@@ -18,17 +18,19 @@ class FanControllerUI:
         self.root.title("Joystick → Fan PWM Controller")
 
         # Estado interno
-        self.brightness = 0
-        self.axis_y     = tk.DoubleVar(value=0.0)
+        self.brightness    = 0
+        self.axis_y        = tk.DoubleVar(value=0.0)
+        self.pwm_speed     = tk.StringVar(value="0 /s")
+        self.current_pwm   = tk.IntVar(value=0)
         self.arduino_status    = tk.StringVar(value="Connecting...")
         self.controller_status = tk.StringVar(value="Connecting...")
         self.error_message     = tk.StringVar(value="")
 
-        # Tiempos para reconexión
+        self.send_count     = 0
+        self.last_send_time = time.time()
         self.last_joy_check = time.time()
-        self.last_arduino_check = time.time()
 
-        # Construcción de la UI
+        # UI
         tk.Label(root, text="Controller Status:").grid(row=0, column=0, sticky="w")
         self.controller_status_label = tk.Label(root, textvariable=self.controller_status, fg="orange")
         self.controller_status_label.grid(row=0, column=1, sticky="w")
@@ -36,29 +38,33 @@ class FanControllerUI:
         tk.Label(root, text="Joystick Y-Axis:").grid(row=1, column=0, sticky="w")
         tk.Label(root, textvariable=self.axis_y).grid(row=1, column=1, sticky="w")
 
-        tk.Label(root, text="Arduino Status:").grid(row=2, column=0, sticky="w")
+        tk.Label(root, text="Current PWM:").grid(row=2, column=0, sticky="w")
+        tk.Label(root, textvariable=self.current_pwm).grid(row=2, column=1, sticky="w")
+
+        tk.Label(root, text="PWM Send Rate:").grid(row=3, column=0, sticky="w")
+        tk.Label(root, textvariable=self.pwm_speed).grid(row=3, column=1, sticky="w")
+
+        tk.Label(root, text="Arduino Status:").grid(row=4, column=0, sticky="w")
         self.arduino_status_label = tk.Label(root, textvariable=self.arduino_status, fg="orange")
-        self.arduino_status_label.grid(row=2, column=1, sticky="w")
+        self.arduino_status_label.grid(row=4, column=1, sticky="w")
 
-        tk.Label(root, textvariable=self.error_message, fg="red").grid(row=3, column=0, columnspan=2, sticky="w")
+        tk.Label(root, textvariable=self.error_message, fg="red").grid(row=5, column=0, columnspan=2, sticky="w")
 
-        # Inicializar serial y joystick
+        # Inicializar
         self._init_serial()
         pygame.init()
         self._init_joystick()
-
-        # Iniciar bucle de actualización
         self.root.after(UPDATE_MS, self.update_loop)
 
     def _init_serial(self):
         try:
             self.ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
-            time.sleep(2)  # espera a que el Arduino se reinicie
+            time.sleep(2)
             self.arduino_status.set("Connected")
             self.arduino_status_label.config(fg="green")
         except Exception as e:
             self.ser = None
-            self.arduino_status.set("Disconnected")
+            self.arduino_status.set("Error")
             self.arduino_status_label.config(fg="red")
             self.error_message.set(f"Arduino error: {e}")
 
@@ -84,7 +90,7 @@ class FanControllerUI:
     def update_loop(self):
         now = time.time()
 
-        # Verificar estado de joystick y reconexión periódica
+        # Reconexión de joystick si se desconecta
         if self.joy:
             if pygame.joystick.get_count() == 0:
                 self.joy = None
@@ -97,23 +103,31 @@ class FanControllerUI:
                 if pygame.joystick.get_count() > 0:
                     self._init_joystick()
 
-        # Reconectar Arduino si está desconectado
-        if not self.ser or not self.ser.is_open:
-            if now - self.last_arduino_check >= RECONNECT_INTERVAL:
-                self.last_arduino_check = now
-                self._init_serial()
-
         # Lectura joystick y envío PWM
         if self.joy:
             pygame.event.pump()
             try:
                 y_raw = -self.joy.get_axis(1)
                 self.axis_y.set(round(y_raw, 3))
+
+                # Reiniciar PWM al presionar X
+                if self.joy.get_button(2):  # Botón X
+                    self.brightness = 0
+
                 if abs(y_raw) > DEAD_ZONE:
                     self.brightness += int(y_raw * STEP)
                     self.brightness = max(0, min(255, self.brightness))
-                    if self.ser and self.ser.is_open:
-                        self.ser.write(f"{self.brightness}\n".encode())
+
+                if self.ser and self.ser.is_open:
+                    self.ser.write(f"{self.brightness}\n".encode())
+                    self.send_count += 1
+                    elapsed = time.time() - self.last_send_time
+                    if elapsed >= 1.0:
+                        self.pwm_speed.set(f"{self.send_count} /s")
+                        self.send_count = 0
+                        self.last_send_time = time.time()
+
+                self.current_pwm.set(self.brightness)
                 self.error_message.set("")
             except Exception as e:
                 self.joy = None
