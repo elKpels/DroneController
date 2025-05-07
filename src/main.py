@@ -1,10 +1,10 @@
 import tkinter as tk
 import pygame
 import serial
+import serial.tools.list_ports
 import time
 
 # Parámetros
-COM_PORT  = 'COM4'
 BAUD_RATE = 9600
 DEAD_ZONE = 0.3
 STEP      = 5
@@ -58,8 +58,19 @@ class FanControllerUI:
 
     def _init_serial(self):
         try:
-            self.ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
-            time.sleep(2)
+            # Busca el puerto donde esté el Arduino Uno
+            ports = serial.tools.list_ports.comports()
+            arduino_port = None
+            for port in ports:
+                if "Arduino Uno" in port.description:
+                    arduino_port = port.device
+                    break
+            if not arduino_port:
+                raise Exception("Arduino Uno no encontrado")
+
+            # Conecta al puerto detectado
+            self.ser = serial.Serial(arduino_port, BAUD_RATE, timeout=1)
+            time.sleep(2)  # espera a que el Arduino se reinicie
             self.arduino_status.set("Connected")
             self.arduino_status_label.config(fg="green")
         except Exception as e:
@@ -110,8 +121,8 @@ class FanControllerUI:
                 y_raw = -self.joy.get_axis(1)
                 self.axis_y.set(round(y_raw, 3))
 
-                # Reiniciar PWM al presionar X
-                if self.joy.get_button(2):  # Botón X
+                # Botón X reinicia PWM
+                if self.joy.get_button(2):
                     self.brightness = 0
 
                 if abs(y_raw) > DEAD_ZONE:
