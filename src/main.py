@@ -1,90 +1,77 @@
 import tkinter as tk
 import pygame
-import serial
-import serial.tools.list_ports
-import time
+import socket
 
-# Parámetros
-BAUD_RATE = 9600
-DEAD_ZONE = 0.3
-STEP      = 5
-DELAY     = 0.02
-UPDATE_MS = int(DELAY * 1000)
-RECONNECT_INTERVAL = 2.0
+# === Configuración ESP32 Wi-Fi ===
+ESP32_IP       = "192.168.4.1"
+ESP32_PORT     = 80
+WIFI_TIMEOUT   = 0.5
+DEAD_ZONE      = 0.2
+STEP           = 2
+DELAY          = 0.05
+UPDATE_MS      = int(DELAY * 1000)
+VIB_THRESHOLD  = 20
+PWM_LIMIT      = 60
+STEP_DECREMENT = 1
+
+def send_pwm_once(val):
+    try:
+        with socket.create_connection((ESP32_IP, ESP32_PORT), timeout=WIFI_TIMEOUT) as s:
+            s.sendall(f"{val}\n".encode())
+        return True
+    except:
+        return False
 
 class FanControllerUI:
     def __init__(self, root):
-        self.root = root
-        self.root.title("Joystick → Fan PWM Controller")
-
-        # Estado interno
-        self.brightness    = 0
-        self.axis_y        = tk.DoubleVar(value=0.0)
-        self.pwm_speed     = tk.StringVar(value="0 /s")
-        self.current_pwm   = tk.IntVar(value=0)
-        self.arduino_status    = tk.StringVar(value="Connecting...")
-        self.controller_status = tk.StringVar(value="Connecting...")
-        self.error_message     = tk.StringVar(value="")
-
-        self.send_count     = 0
-        self.last_send_time = time.time()
-        self.last_joy_check = time.time()
+        self.root             = root
+        self.brightness       = 0
+        self.prev_brightness  = -1
+        self.saved_brightness = 0
+        self.axis_y           = tk.DoubleVar(value=0.0)
+        self.current_pwm      = tk.IntVar(value=0)
+        self.status_wifi      = tk.StringVar(value="Desconectado")
+        self.vib_on           = True
+        self.vib_status       = tk.StringVar(value="Encendido")
+        self.last_y_button    = False
+        self.last_x_button    = False
+        self.last_a_button    = False
+        self.a_override_active= False
+        self.controller_status= tk.StringVar(value="Connecting...")
+        self.error_message    = tk.StringVar(value="")
 
         # UI
-        tk.Label(root, text="Controller Status:").grid(row=0, column=0, sticky="w")
+        tk.Label(root, text="Eje Y: Joystick Izquierdo:").grid(row=0, column=0, sticky="w")
+        tk.Label(root, textvariable=self.axis_y).grid(row=0, column=1, sticky="w")
+        tk.Label(root, text="Valor PWM:").grid(row=1, column=0, sticky="w")
+        tk.Label(root, textvariable=self.current_pwm).grid(row=1, column=1, sticky="w")
+        tk.Label(root, text="ESP32 Wi-Fi:").grid(row=2, column=0, sticky="w")
+        self.lbl_wifi = tk.Label(root, textvariable=self.status_wifi, fg="red")
+        self.lbl_wifi.grid(row=2, column=1, sticky="w")
+        tk.Label(root, text="Vibración:").grid(row=3, column=0, sticky="w")
+        self.lbl_vib = tk.Label(root, textvariable=self.vib_status, fg="green")
+        self.lbl_vib.grid(row=3, column=1, sticky="w")
+        tk.Label(root, text="Controlador:").grid(row=4, column=0, sticky="w")
         self.controller_status_label = tk.Label(root, textvariable=self.controller_status, fg="orange")
-        self.controller_status_label.grid(row=0, column=1, sticky="w")
-
-        tk.Label(root, text="Joystick Y-Axis:").grid(row=1, column=0, sticky="w")
-        tk.Label(root, textvariable=self.axis_y).grid(row=1, column=1, sticky="w")
-
-        tk.Label(root, text="Current PWM:").grid(row=2, column=0, sticky="w")
-        tk.Label(root, textvariable=self.current_pwm).grid(row=2, column=1, sticky="w")
-
-        tk.Label(root, text="PWM Send Rate:").grid(row=3, column=0, sticky="w")
-        tk.Label(root, textvariable=self.pwm_speed).grid(row=3, column=1, sticky="w")
-
-        tk.Label(root, text="Arduino Status:").grid(row=4, column=0, sticky="w")
-        self.arduino_status_label = tk.Label(root, textvariable=self.arduino_status, fg="orange")
-        self.arduino_status_label.grid(row=4, column=1, sticky="w")
-
+        self.controller_status_label.grid(row=4, column=1, sticky="w")
         tk.Label(root, textvariable=self.error_message, fg="red").grid(row=5, column=0, columnspan=2, sticky="w")
 
-        # Inicializar
-        self._init_serial()
+        # Inicializar pygame y joystick
         pygame.init()
+        pygame.joystick.init()
+        self.joy = None
         self._init_joystick()
-        self.root.after(UPDATE_MS, self.update_loop)
 
-    def _init_serial(self):
-        try:
-            # Busca el puerto donde esté el Arduino Uno
-            ports = serial.tools.list_ports.comports()
-            arduino_port = None
-            for port in ports:
-                if "Arduino Uno" in port.description:
-                    arduino_port = port.device
-                    break
-            if not arduino_port:
-                raise Exception("Arduino Uno no encontrado")
-
-            # Conecta al puerto detectado
-            self.ser = serial.Serial(arduino_port, BAUD_RATE, timeout=1)
-            time.sleep(2)  # espera a que el Arduino se reinicie
-            self.arduino_status.set("Connected")
-            self.arduino_status_label.config(fg="green")
-        except Exception as e:
-            self.ser = None
-            self.arduino_status.set("Error")
-            self.arduino_status_label.config(fg="red")
-            self.error_message.set(f"Arduino error: {e}")
+        # Arrancar bucle
+        root.after(UPDATE_MS, self.loop)
 
     def _init_joystick(self):
         if pygame.joystick.get_count() > 0:
             try:
                 self.joy = pygame.joystick.Joystick(0)
                 self.joy.init()
-                self.controller_status.set(self.joy.get_name())
+                nombre = self.joy.get_name()
+                self.controller_status.set(nombre)
                 self.controller_status_label.config(fg="green")
                 self.error_message.set("")
             except Exception as e:
@@ -94,72 +81,94 @@ class FanControllerUI:
                 self.error_message.set(f"Joystick error: {e}")
         else:
             self.joy = None
-            self.controller_status.set("Disconnected")
+            self.controller_status.set("Desconectado")
             self.controller_status_label.config(fg="red")
-            self.error_message.set("Joystick disconnected")
+            self.error_message.set("Joystick desconectado")
 
-    def update_loop(self):
-        now = time.time()
+    def perform_pwm(self, val):
+        ok = send_pwm_once(val)
+        self.status_wifi.set("Conectado" if ok else "Desconectado")
+        self.lbl_wifi.config(fg="green" if ok else "red")
+        self.brightness = val
+        self.current_pwm.set(val)
+        self.prev_brightness = val
 
-        # Reconexión de joystick si se desconecta
-        if self.joy:
-            if pygame.joystick.get_count() == 0:
-                self.joy = None
-                self.controller_status.set("Disconnected")
-                self.controller_status_label.config(fg="red")
-                self.error_message.set("Joystick disconnected")
-        else:
-            if now - self.last_joy_check >= RECONNECT_INTERVAL:
-                self.last_joy_check = now
-                if pygame.joystick.get_count() > 0:
-                    self._init_joystick()
+    def loop(self):
+        # Reconectar joystick si cambió estado
+        if self.joy and pygame.joystick.get_count() == 0:
+            self._init_joystick()
+        elif not self.joy and pygame.joystick.get_count() > 0:
+            self._init_joystick()
 
-        # Lectura joystick y envío PWM
         if self.joy:
             pygame.event.pump()
-            try:
-                y_raw = -self.joy.get_axis(1)
-                self.axis_y.set(round(y_raw, 3))
 
-                # Botón X reinicia PWM
-                if self.joy.get_button(2):
-                    self.brightness = 0
+            # Toggle vibración con Y
+            y_pressed = self.joy.get_button(3)
+            if y_pressed and not self.last_y_button:
+                self.vib_on = not self.vib_on
+                self.vib_status.set("Encendido" if self.vib_on else "Apagado")
+                self.lbl_vib.config(fg="green" if self.vib_on else "red")
+            self.last_y_button = y_pressed
 
-                if abs(y_raw) > DEAD_ZONE:
-                    self.brightness += int(y_raw * STEP)
-                    self.brightness = max(0, min(255, self.brightness))
+            # Override con A
+            a_pressed = self.joy.get_button(0)
+            if a_pressed and not self.last_a_button:
+                self.saved_brightness = self.brightness
+                self.a_override_active = True
+                self.perform_pwm(30)
+            elif not a_pressed and self.last_a_button and self.a_override_active:
+                self.perform_pwm(self.saved_brightness)
+                self.a_override_active = False
+            self.last_a_button = a_pressed
 
-                if self.ser and self.ser.is_open:
-                    self.ser.write(f"{self.brightness}\n".encode())
-                    self.send_count += 1
-                    elapsed = time.time() - self.last_send_time
-                    if elapsed >= 1.0:
-                        self.pwm_speed.set(f"{self.send_count} /s")
-                        self.send_count = 0
-                        self.last_send_time = time.time()
+            # Reset con X
+            x_pressed = self.joy.get_button(2)
+            if x_pressed and not self.last_x_button:
+                self.a_override_active = False
+                self.perform_pwm(0)
+            self.last_x_button = x_pressed
 
-                self.current_pwm.set(self.brightness)
-                self.error_message.set("")
-            except Exception as e:
-                self.joy = None
-                self.controller_status.set("Error")
-                self.controller_status_label.config(fg="red")
-                self.error_message.set(f"Joystick read error: {e}")
+            # Control eje Y
+            if not self.a_override_active and not x_pressed:
+                y = -self.joy.get_axis(1)
+                self.axis_y.set(round(y, 3))
+                if abs(y) > DEAD_ZONE:
+                    nuevo = max(0, min(PWM_LIMIT, self.brightness + int(y * STEP)))
+                    self.perform_pwm(nuevo)
 
-        # Verificar Arduino
-        if self.ser:
-            if self.ser.is_open:
-                self.arduino_status.set("Connected")
-                self.arduino_status_label.config(fg="green")
+            # Decremento con B
+            b_pressed = self.joy.get_button(1)
+            if b_pressed and self.brightness > 0:
+                self.perform_pwm(max(0, self.brightness - STEP_DECREMENT))
+
+            # Si joystick se pierde, asegurar PWM a 0
+        else:
+            if self.prev_brightness != 0:
+                self.perform_pwm(0)
+
+        # Vibración proporcional
+        if self.joy:
+            if self.vib_on and self.brightness >= VIB_THRESHOLD:
+                intensity = (self.brightness - VIB_THRESHOLD) / (70 - VIB_THRESHOLD)
+                try:
+                    self.joy.rumble(intensity, intensity, UPDATE_MS)
+                except:
+                    pass
             else:
-                self.arduino_status.set("Disconnected")
-                self.arduino_status_label.config(fg="red")
-                self.error_message.set("Serial port closed")
+                try:
+                    self.joy.rumble(0, 0, 0)
+                except:
+                    pass
 
-        self.root.after(UPDATE_MS, self.update_loop)
+        # Siguiente iteración
+        self.root.after(UPDATE_MS, self.loop)
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app  = FanControllerUI(root)
+    root.title("Drone Controller Wi-Fi")
+    root.geometry("350x130")
+    root.resizable(True, False)
+    FanControllerUI(root)
     root.mainloop()
