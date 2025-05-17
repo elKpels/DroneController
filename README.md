@@ -1,4 +1,5 @@
 # Drone Controller Wi-Fi
+![Logo](https://github.com/elKpels/DroneController/blob/main/dronecontrollerlogo.png])
 
 Controlador de velocidad PWM para un ventilador o motor conectado a un ESP32 mediante Wi-Fi, utilizando un joystick compatible con pygame y una interfaz gráfica con Tkinter.
 
