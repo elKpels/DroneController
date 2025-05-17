@@ -24,6 +24,11 @@ El joystick puede conectarse de dos formas distintas a la PC:
 
 Ambos métodos son detectados automáticamente por pygame.
 
+## Capturas de Pantalla
+
+Interfaz Gráfica
+![Interfaz](https://github.com/elKpels/DroneController/blob/main/screenshot.png)
+
 ## Requisitos
 
 - Python 3
